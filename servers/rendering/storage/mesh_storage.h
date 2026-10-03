@@ -155,6 +155,9 @@ public:
 	virtual void multimesh_set_buffer(RID p_multimesh, const Vector<float> &p_buffer);
 	virtual RID multimesh_get_command_buffer_rd_rid(RID p_multimesh) const;
 	virtual RID multimesh_get_buffer_rd_rid(RID p_multimesh) const;
+	// [doggo] Only the RD renderer draws compact 2D instances; everyone else reports unsupported.
+	virtual void multimesh_set_compact_2d(RID p_multimesh, bool p_enable) {}
+	virtual bool multimesh_is_compact_2d(RID p_multimesh) const { return false; }
 	virtual Vector<float> multimesh_get_buffer(RID p_multimesh) const;
 
 	virtual void multimesh_set_buffer_interpolated(RID p_multimesh, const Vector<float> &p_buffer, const Vector<float> &p_buffer_prev);

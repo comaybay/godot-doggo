@@ -243,6 +243,15 @@ void main() {
 
 		vertex = new_vertex;
 		color *= pcolor;
+	} else if (instancing == 1 && bool(params.batch_flags & BATCH_FLAGS_INSTANCING_COMPACT_2D)) {
+		// [doggo] Compact 2D instance, one vec4: x, y, snorm16x2 (cos, sin), half2 (uniform scale, alpha).
+		// Builds the same model matrix the 8-float path does for a rotation * uniform scale + origin.
+		vec4 d = transforms.data[gl_InstanceIndex];
+		vec2 cs = unpackSnorm2x16(floatBitsToUint(d.z));
+		vec2 sa = unpackHalf2x16(floatBitsToUint(d.w));
+		mat4 matrix = mat4(vec4(cs.x * sa.x, cs.y * sa.x, 0.0, 0.0), vec4(-cs.y * sa.x, cs.x * sa.x, 0.0, 0.0), vec4(0.0, 0.0, 1.0, 0.0), vec4(d.x, d.y, 0.0, 1.0));
+		color.a *= sa.y;
+		model_matrix = model_matrix * matrix;
 	} else if (instancing == 1) {
 		uint stride = 2 + bitfieldExtract(params.batch_flags, BATCH_FLAGS_INSTANCING_HAS_COLORS_SHIFT, 1) + bitfieldExtract(params.batch_flags, BATCH_FLAGS_INSTANCING_HAS_CUSTOM_DATA_SHIFT, 1);
 

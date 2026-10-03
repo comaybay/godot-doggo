@@ -1608,6 +1608,12 @@ void MeshStorage::_multimesh_allocate_data(RID p_multimesh, int p_instances, RSE
 	multimesh->uses_custom_data = p_use_custom_data;
 	multimesh->custom_data_offset_cache = multimesh->color_offset_cache + (p_use_colors ? 4 : 0);
 	multimesh->stride_cache = multimesh->custom_data_offset_cache + (p_use_custom_data ? 4 : 0);
+	if (multimesh->compact_2d) {
+		// [doggo] One vec4 per instance carries transform AND alpha; there is no room for colors or custom data.
+		ERR_FAIL_COND_MSG(p_transform_format != RSE::MULTIMESH_TRANSFORM_2D || p_use_colors || p_use_custom_data,
+				"Compact 2D multimesh: requires TRANSFORM_2D with no colors and no custom data.");
+		multimesh->stride_cache = 4;
+	}
 	multimesh->buffer_set = false;
 
 	multimesh->indirect = p_use_indirect;
@@ -1631,6 +1637,17 @@ void MeshStorage::_multimesh_allocate_data(RID p_multimesh, int p_instances, RSE
 	}
 
 	multimesh->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_MULTIMESH);
+}
+
+void MeshStorage::multimesh_set_compact_2d(RID p_multimesh, bool p_enable) {
+	MultiMesh *multimesh = multimesh_owner.get_or_null(p_multimesh);
+	ERR_FAIL_NULL(multimesh);
+	if (multimesh->compact_2d == p_enable) {
+		return;
+	}
+	// [doggo] The stride is fixed at allocation; flipping it under a live buffer would misread every instance.
+	ERR_FAIL_COND_MSG(multimesh->instances > 0, "Compact 2D multimesh: set it before instance_count.");
+	multimesh->compact_2d = p_enable;
 }
 
 void MeshStorage::_multimesh_enable_motion_vectors(MultiMesh *multimesh) {
@@ -1750,6 +1767,8 @@ void MeshStorage::_multimesh_set_mesh(RID p_multimesh, RID p_mesh) {
 #define MULTIMESH_DIRTY_REGION_SIZE 512
 
 void MeshStorage::_multimesh_make_local(MultiMesh *multimesh) const {
+	// [doggo] Every per-instance get/set reads or writes the 8-float layout through the local cache.
+	ERR_FAIL_COND_MSG(multimesh->compact_2d, "Compact 2D multimesh: per-instance access is unsupported; write the buffer.");
 	if (multimesh->data_cache.size() > 0) {
 		return; //already local
 	}
@@ -1869,6 +1888,8 @@ void MeshStorage::_multimesh_re_create_aabb(MultiMesh *multimesh, const float *p
 	if (multimesh->custom_aabb != AABB()) {
 		return;
 	}
+	// [doggo] The AABB walk reads 8-float transforms; a compact buffer would read past its end.
+	ERR_FAIL_COND_MSG(multimesh->compact_2d, "Compact 2D multimesh: set a custom AABB.");
 	AABB aabb;
 	AABB mesh_aabb = mesh_get_aabb(multimesh->mesh);
 	for (int i = 0; i < p_instances; i++) {

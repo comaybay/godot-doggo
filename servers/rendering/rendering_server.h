@@ -286,6 +286,9 @@ public:
 	virtual void multimesh_set_buffer(RID p_multimesh, const Vector<float> &p_buffer) = 0;
 	virtual RID multimesh_get_command_buffer_rd_rid(RID p_multimesh) const = 0;
 	virtual RID multimesh_get_buffer_rd_rid(RID p_multimesh) const = 0;
+	// [doggo] Compact 2D instances: 4 floats each (x, y, snorm16x2 cos/sin, half2 scale/alpha). Set before allocating.
+	virtual void multimesh_set_compact_2d(RID p_multimesh, bool p_enable) = 0;
+	virtual bool multimesh_is_compact_2d(RID p_multimesh) const = 0;
 	virtual Vector<float> multimesh_get_buffer(RID p_multimesh) const = 0;
 
 	// Interpolation.

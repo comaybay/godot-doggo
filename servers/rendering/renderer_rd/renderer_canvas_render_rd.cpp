@@ -2800,6 +2800,9 @@ void RendererCanvasRenderRD::_record_item_commands(const Item *p_item, RenderTar
 					if (mesh_storage->multimesh_uses_custom_data(mm->multimesh)) {
 						r_current_batch->flags |= BATCH_FLAGS_INSTANCING_HAS_CUSTOM_DATA;
 					}
+					if (mesh_storage->multimesh_is_compact_2d(mm->multimesh)) {
+						r_current_batch->flags |= BATCH_FLAGS_INSTANCING_COMPACT_2D;
+					}
 				} else if (c->type == Item::Command::TYPE_PARTICLES) {
 					RendererRD::TextureStorage *texture_storage = RendererRD::TextureStorage::get_singleton();
 					RendererRD::ParticlesStorage *particles_storage = RendererRD::ParticlesStorage::get_singleton();
