@@ -1202,12 +1202,11 @@ Error RenderingDevice::_buffer_update(Buffer *p_buffer, RID p_buffer_id, uint32_
 	thread_local LocalVector<StagingCopyJob> pending_copies;
 	pending_copies.clear();
 	uint64_t pending_bytes = 0;
-	static const bool force_serial = OS::get_singleton()->has_environment("GODOT_DOGGO_SERIAL_UPLOAD"); // TEMP A/B
 	const auto flush_pending_copies = [&]() {
 		if (pending_copies.is_empty()) {
 			return;
 		}
-		if (pending_copies.size() > 1 && pending_bytes >= STAGING_PARALLEL_COPY_MIN_BYTES && !force_serial) {
+		if (pending_copies.size() > 1 && pending_bytes >= STAGING_PARALLEL_COPY_MIN_BYTES) {
 			WorkerThreadPool *pool = WorkerThreadPool::get_singleton();
 			const WorkerThreadPool::GroupID group = pool->add_native_group_task(&_staging_copy_job, pending_copies.ptr(), pending_copies.size(), -1, true, SNAME("RD staging copy"));
 			pool->wait_for_group_task_completion(group);
