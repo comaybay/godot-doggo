@@ -38,6 +38,7 @@
 #include "core/object/class_db.h"
 #include "core/os/os.h"
 #include "core/profiling/profiling.h"
+#include "core/object/worker_thread_pool.h"
 #include "core/templates/fixed_vector.h"
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
 #include "servers/rendering/rendering_device_binds.h"
@@ -1155,6 +1156,23 @@ Error RenderingDevice::buffer_copy(RID p_src_buffer, RID p_dst_buffer, uint32_t 
 	return OK;
 }
 
+namespace {
+// [doggo] One staging-block copy of a large buffer update, run on the WorkerThreadPool.
+struct StagingCopyJob {
+	uint8_t *dst = nullptr;
+	const uint8_t *src = nullptr;
+	uint32_t size = 0;
+};
+
+void _staging_copy_job(void *p_userdata, uint32_t p_index) {
+	const StagingCopyJob &job = static_cast<const StagingCopyJob *>(p_userdata)[p_index];
+	memcpy(job.dst, job.src, job.size);
+}
+
+// [doggo] Below this many bytes a serial memcpy beats waking the pool.
+constexpr uint64_t STAGING_PARALLEL_COPY_MIN_BYTES = 4u * 1024u * 1024u;
+} // namespace
+
 Error RenderingDevice::_buffer_update(Buffer *p_buffer, RID p_buffer_id, uint32_t p_offset, uint32_t p_size, const void *p_data) {
 	copy_bytes_count += p_size;
 
@@ -1176,6 +1194,32 @@ Error RenderingDevice::_buffer_update(Buffer *p_buffer, RID p_buffer_id, uint32_
 	thread_local LocalVector<RDG::RecordedBufferCopy> command_buffer_copies_vector;
 	command_buffer_copies_vector.clear();
 
+	// [doggo] The staging memcpy of a large update is split per staging block and run on the WorkerThreadPool:
+	// one core copying ~60 MB of multimesh instances into staging cost ~3.7 ms of render-thread time per frame,
+	// while the pool sat idle. Allocation and command recording stay serial and in order; only the byte copies
+	// fan out. Every pending copy is finished before anything can submit work that reads the staging blocks
+	// (a non-NONE staging action) and before returning.
+	thread_local LocalVector<StagingCopyJob> pending_copies;
+	pending_copies.clear();
+	uint64_t pending_bytes = 0;
+	static const bool force_serial = OS::get_singleton()->has_environment("GODOT_DOGGO_SERIAL_UPLOAD"); // TEMP A/B
+	const auto flush_pending_copies = [&]() {
+		if (pending_copies.is_empty()) {
+			return;
+		}
+		if (pending_copies.size() > 1 && pending_bytes >= STAGING_PARALLEL_COPY_MIN_BYTES && !force_serial) {
+			WorkerThreadPool *pool = WorkerThreadPool::get_singleton();
+			const WorkerThreadPool::GroupID group = pool->add_native_group_task(&_staging_copy_job, pending_copies.ptr(), pending_copies.size(), -1, true, SNAME("RD staging copy"));
+			pool->wait_for_group_task_completion(group);
+		} else {
+			for (const StagingCopyJob &job : pending_copies) {
+				memcpy(job.dst, job.src, job.size);
+			}
+		}
+		pending_copies.clear();
+		pending_bytes = 0;
+	};
+
 	const uint8_t *src_data = reinterpret_cast<const uint8_t *>(p_data);
 	const uint32_t required_align = 32;
 	while (to_submit > 0) {
@@ -1195,10 +1239,14 @@ Error RenderingDevice::_buffer_update(Buffer *p_buffer, RID p_buffer_id, uint32_
 			command_buffer_copies_vector.clear();
 		}
 
+		if (required_action != STAGING_REQUIRED_ACTION_NONE) {
+			flush_pending_copies();
+		}
 		_staging_buffer_execute_required_action(upload_staging_buffers, required_action);
 
-		// Copy to staging buffer.
-		memcpy(upload_staging_buffers.blocks[upload_staging_buffers.current].data_ptr + block_write_offset, src_data + submit_from, block_write_amount);
+		// Copy to staging buffer (deferred; see pending_copies).
+		pending_copies.push_back({ upload_staging_buffers.blocks[upload_staging_buffers.current].data_ptr + block_write_offset, src_data + submit_from, block_write_amount });
+		pending_bytes += block_write_amount;
 
 		// Insert a command to copy this.
 		RDD::BufferCopyRegion region;
@@ -1216,6 +1264,8 @@ Error RenderingDevice::_buffer_update(Buffer *p_buffer, RID p_buffer_id, uint32_
 		to_submit -= block_write_amount;
 		submit_from += block_write_amount;
 	}
+
+	flush_pending_copies();
 
 	if (!command_buffer_copies_vector.is_empty()) {
 		if (_buffer_make_mutable(p_buffer, p_buffer_id)) {
