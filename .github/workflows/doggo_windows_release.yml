@@ -1,0 +1,113 @@
+# Manually compile the Windows editor (and export templates) and publish a
+# GitHub Release. Asset names match what the-battle-dogs installs with
+# dev_scripts/fetch-godot-doggo.ps1 (update-godot-experimental.ps1).
+#
+# Run from this repo's Actions tab: "windows-release" → Run workflow.
+# Then in the-battle-dogs: pwsh -File dev_scripts/fetch-godot-doggo.ps1
+
+name: windows-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_templates:
+        description: Editor zip only (skip template_release / template_debug)
+        type: boolean
+        default: false
+
+concurrency:
+  group: windows-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install SCons
+        run: python -m pip install "scons>=4.0"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .scons-cache
+            .sconsign.dblite
+          key: doggo-win-${{ github.sha }}
+          restore-keys: |
+            doggo-win-
+
+      - name: Build and pack
+        id: pack
+        shell: pwsh
+        env:
+          SCONS_CACHE: ${{ github.workspace }}/.scons-cache
+        run: |
+          $skip = ("${{ inputs.skip_templates }}" -eq "true")
+          $args = @(
+            "-File", ".github/scripts/ci-build-windows.ps1",
+            "-OutDir", "${{ github.workspace }}/dist"
+          )
+          if ($skip) { $args += "-SkipTemplates" }
+          & pwsh @args
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.pack.outputs.tag }}
+          TITLE: ${{ steps.pack.outputs.title }}
+          SHA: ${{ steps.pack.outputs.sha }}
+          SHORT: ${{ steps.pack.outputs.short }}
+          EDITOR_ZIP: ${{ steps.pack.outputs.editor_zip }}
+          TEMPLATES_TPZ: ${{ steps.pack.outputs.templates_tpz }}
+          VERSION_DASH: ${{ steps.pack.outputs.version_dash }}
+          VERSION_DOT: ${{ steps.pack.outputs.version_dot }}
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          if ([string]::IsNullOrEmpty($env:TAG)) { throw "ci-build-windows.ps1 did not write tag to GITHUB_OUTPUT" }
+          if (-not (Test-Path -LiteralPath $env:EDITOR_ZIP)) { throw "Editor zip missing: $($env:EDITOR_ZIP)" }
+
+          $editorName = Split-Path -Leaf $env:EDITOR_ZIP
+          $lines = @(
+            "Godot $($env:VERSION_DASH) (godot-doggo ``$($env:SHORT)``). Windows x86_64.",
+            "",
+            "Source: https://github.com/comaybay/godot-doggo/commit/$($env:SHA)",
+            "",
+            "## Assets",
+            "- ``$editorName``: editor (GUI + console)."
+          )
+          if ($env:TEMPLATES_TPZ) {
+            $tpzName = Split-Path -Leaf $env:TEMPLATES_TPZ
+            $lines += "- ``$tpzName``: Windows release + debug templates; installs to ``export_templates/$($env:VERSION_DOT)``."
+          }
+          $lines += "", "## Install", "From the-battle-dogs: ``.\dev_scripts\fetch-godot-doggo.ps1``"
+          $notes = $lines -join "`n"
+
+          gh release view $env:TAG 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Deleting existing release $env:TAG so this run can replace it."
+            gh release delete $env:TAG --yes --cleanup-tag
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+          $create = @(
+            "release", "create", $env:TAG, $env:EDITOR_ZIP,
+            "--target", $env:SHA,
+            "--title", $env:TITLE,
+            "--notes", $notes
+          )
+          if ($env:TEMPLATES_TPZ) { $create += $env:TEMPLATES_TPZ }
+          gh @create
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
