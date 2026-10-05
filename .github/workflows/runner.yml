@@ -1,5 +1,8 @@
+# Upstream Godot fires this on every push. the-battle-dogs compiles the editor
+# from its own Actions (godot-doggo-bin), so this runner is dispatch-only.
 name: 🔗 GHA
-on: [push, pull_request, merge_group, workflow_dispatch]
+on:
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}|${{ github.ref_name }}
