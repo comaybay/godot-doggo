@@ -233,6 +233,7 @@ private:
 		bool uses_colors = false;
 		bool uses_custom_data = false;
 		bool compact_2d = false; // [doggo] see RenderingServer::multimesh_set_compact_2d
+		bool depth_prepass_2d = false; // [doggo] see RenderingServer::multimesh_set_depth_prepass_2d
 		int visible_instances = -1;
 		AABB aabb;
 		AABB custom_aabb;
@@ -723,6 +724,17 @@ public:
 		MultiMesh *multimesh = multimesh_owner.get_or_null(p_multimesh);
 		ERR_FAIL_NULL_V(multimesh, false);
 		return multimesh->compact_2d;
+	}
+
+	virtual void multimesh_set_depth_prepass_2d(RID p_multimesh, bool p_enable) override {
+		MultiMesh *multimesh = multimesh_owner.get_or_null(p_multimesh);
+		ERR_FAIL_NULL(multimesh);
+		multimesh->depth_prepass_2d = p_enable;
+	}
+	_FORCE_INLINE_ virtual bool multimesh_is_depth_prepass_2d(RID p_multimesh) const override {
+		MultiMesh *multimesh = multimesh_owner.get_or_null(p_multimesh);
+		ERR_FAIL_NULL_V(multimesh, false);
+		return multimesh->depth_prepass_2d;
 	}
 
 	_FORCE_INLINE_ bool multimesh_uses_custom_data(RID p_multimesh) const {

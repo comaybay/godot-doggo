@@ -1517,6 +1517,19 @@ void RendererCanvasRenderRD::CanvasShaderData::_create_pipeline(PipelineKey p_pi
 		attachment = RendererRD::MaterialStorage::ShaderData::blend_mode_to_blend_attachment(blend_mode_rd);
 	}
 
+	RD::PipelineDepthStencilState depth_state;
+	if (p_pipeline_key.depth_mode == DEPTH_MODE_TEST) {
+		depth_state.enable_depth_test = true;
+		depth_state.depth_compare_operator = RD::COMPARE_OP_GREATER_OR_EQUAL; // equal: the occluder itself still draws
+	} else if (p_pipeline_key.depth_mode == DEPTH_MODE_PREPASS) {
+		depth_state.enable_depth_test = true;
+		depth_state.enable_depth_write = true;
+		depth_state.depth_compare_operator = RD::COMPARE_OP_GREATER;
+		attachment = RD::PipelineColorBlendState::Attachment();
+		attachment.write_r = attachment.write_g = attachment.write_b = attachment.write_a = false; // depth only
+		dynamic_state_flags = 0;
+	}
+
 	blend_state.attachments.push_back(attachment);
 
 	RD::PipelineMultisampleState multisample_state;
@@ -1533,7 +1546,7 @@ void RendererCanvasRenderRD::CanvasShaderData::_create_pipeline(PipelineKey p_pi
 	RID shader_rid = get_shader(p_pipeline_key.variant, p_pipeline_key.ubershader);
 	ERR_FAIL_COND(shader_rid.is_null());
 
-	RID pipeline = RD::get_singleton()->render_pipeline_create(shader_rid, p_pipeline_key.framebuffer_format_id, p_pipeline_key.vertex_format_id, p_pipeline_key.render_primitive, RD::PipelineRasterizationState(), multisample_state, RD::PipelineDepthStencilState(), blend_state, dynamic_state_flags, 0, specialization_constants);
+	RID pipeline = RD::get_singleton()->render_pipeline_create(shader_rid, p_pipeline_key.framebuffer_format_id, p_pipeline_key.vertex_format_id, p_pipeline_key.render_primitive, RD::PipelineRasterizationState(), multisample_state, depth_state, blend_state, dynamic_state_flags, 0, specialization_constants);
 	ERR_FAIL_COND(pipeline.is_null());
 
 	pipeline_hash_map.add_compiled_pipeline(p_pipeline_key.hash(), pipeline);
@@ -2191,6 +2204,7 @@ void RendererCanvasRenderRD::_render_batch_items(RenderTarget p_to_render_target
 		Item *current_clip = nullptr;
 
 		// Record Batches.
+		depth_next_index = 1; // 0 is the cleared depth: nothing drawn there
 		// First item always forms its own batch.
 		bool batch_broken = false;
 		Batch *current_batch = _new_batch(batch_broken);
@@ -2291,9 +2305,33 @@ void RendererCanvasRenderRD::_render_batch_items(RenderTarget p_to_render_target
 		fb_uniform_set = _create_base_uniform_set(p_to_render_target.render_target, p_to_backbuffer);
 	}
 
+	// [doggo] Canvas depth: only for a pass that draws a flagged multimesh, straight into the target.
+	// A backbuffer pass (canvas group) or a multisampled target keeps the plain path.
+	bool use_depth = false;
+	if (!p_to_backbuffer && texture_storage->render_target_get_msaa(p_to_render_target.render_target) == RSE::VIEWPORT_MSAA_DISABLED) {
+		for (uint32_t i = 0; i <= state.current_batch_index; i++) {
+			if (state.canvas_instance_batches[i].depth_prepass && state.canvas_instance_batches[i].instance_count != 0) {
+				use_depth = true;
+				break;
+			}
+		}
+	}
+	if (use_depth) {
+		RID depth_framebuffer = _get_depth_framebuffer(p_to_render_target.render_target);
+		if (depth_framebuffer.is_valid()) {
+			framebuffer = depth_framebuffer;
+		} else {
+			use_depth = false;
+		}
+	}
+
 	RD::FramebufferFormatID fb_format = RD::get_singleton()->framebuffer_get_format(framebuffer);
 
-	RD::DrawListID draw_list = RD::get_singleton()->draw_list_begin(framebuffer, clear ? RD::DRAW_CLEAR_COLOR_0 : RD::DRAW_DEFAULT_ALL, clear_color, 1.0f, 0, Rect2(), RDD::BreadcrumbMarker::UI_PASS);
+	BitField<RD::DrawFlags> draw_flags = clear ? RD::DRAW_CLEAR_COLOR_0 : RD::DRAW_DEFAULT_ALL;
+	if (use_depth) {
+		draw_flags.set_flag(RD::DRAW_CLEAR_DEPTH);
+	}
+	RD::DrawListID draw_list = RD::get_singleton()->draw_list_begin(framebuffer, draw_flags, clear_color, 0.0f, 0, Rect2(), RDD::BreadcrumbMarker::UI_PASS);
 
 	RD::get_singleton()->draw_list_bind_uniform_set(draw_list, fb_uniform_set, BASE_UNIFORM_SET);
 	RD::get_singleton()->draw_list_bind_uniform_set(draw_list, state.default_transforms_uniform_set, TRANSFORMS_UNIFORM_SET);
@@ -2301,13 +2339,8 @@ void RendererCanvasRenderRD::_render_batch_items(RenderTarget p_to_render_target
 	Item *current_clip = nullptr;
 	state.current_batch_uniform_set = RID();
 
-	for (uint32_t i = 0; i <= state.current_batch_index; i++) {
-		Batch *current_batch = &state.canvas_instance_batches[i];
-		// Skipping when there is no instances.
-		if (current_batch->instance_count == 0) {
-			continue;
-		}
-
+	const bool using_hdr = texture_storage->render_target_is_using_hdr(p_to_render_target.render_target);
+	auto draw_batch = [&](Batch *current_batch, DepthMode p_depth_mode, RenderingServerTypes::RenderInfo *r_info) {
 		//setup clip
 		if (current_clip != current_batch->clip) {
 			current_clip = current_batch->clip;
@@ -2324,7 +2357,7 @@ void RendererCanvasRenderRD::_render_batch_items(RenderTarget p_to_render_target
 			if (material_data->shader_data->version.is_valid() && material_data->shader_data->is_valid()) {
 				shader_data = material_data->shader_data;
 				// Update uniform set.
-				RID uniform_set = texture_storage->render_target_is_using_hdr(p_to_render_target.render_target) ? material_data->uniform_set : material_data->uniform_set_srgb;
+				RID uniform_set = using_hdr ? material_data->uniform_set : material_data->uniform_set_srgb;
 				if (uniform_set.is_valid() && RD::get_singleton()->uniform_set_is_valid(uniform_set)) { // Material may not have a uniform set.
 					RD::get_singleton()->draw_list_bind_uniform_set(draw_list, uniform_set, MATERIAL_UNIFORM_SET);
 					material_data->set_as_used();
@@ -2332,13 +2365,69 @@ void RendererCanvasRenderRD::_render_batch_items(RenderTarget p_to_render_target
 			}
 		}
 
-		_render_batch(draw_list, shader_data, fb_format, p_lights, current_batch, r_render_info);
+		if (p_depth_mode == DEPTH_MODE_PREPASS) {
+			// Only a blend that replaces the destination at alpha 1 can occlude. Every other flagged batch is
+			// still depth-TESTED below: what an opaque later pixel covers is invisible under any blend.
+			const int blend = shader_data->blend_mode;
+			if (blend != RendererRD::MaterialStorage::ShaderData::BLEND_MODE_MIX && blend != RendererRD::MaterialStorage::ShaderData::BLEND_MODE_PREMULTIPLIED_ALPHA && blend != RendererRD::MaterialStorage::ShaderData::BLEND_MODE_DISABLED) {
+				return;
+			}
+		}
+
+		_render_batch(draw_list, shader_data, fb_format, p_lights, current_batch, r_info, p_depth_mode);
+	};
+
+	if (use_depth) {
+		// [doggo] Front to back: the last flagged batch first (and, in the shader, its last instance first).
+		for (int64_t i = state.current_batch_index; i >= 0; i--) {
+			Batch *current_batch = &state.canvas_instance_batches[i];
+			if (current_batch->instance_count != 0 && current_batch->depth_prepass) {
+				draw_batch(current_batch, DEPTH_MODE_PREPASS, nullptr);
+			}
+		}
+	}
+
+	for (uint32_t i = 0; i <= state.current_batch_index; i++) {
+		Batch *current_batch = &state.canvas_instance_batches[i];
+		// Skipping when there is no instances.
+		if (current_batch->instance_count == 0) {
+			continue;
+		}
+		draw_batch(current_batch, use_depth && current_batch->depth_prepass ? DEPTH_MODE_TEST : DEPTH_MODE_NONE, r_render_info);
 	}
 
 	RD::get_singleton()->draw_list_end();
 
 	state.current_batch_index = 0;
 	state.canvas_instance_batches.clear();
+}
+
+RID RendererCanvasRenderRD::_get_depth_framebuffer(RID p_render_target) {
+	RendererRD::TextureStorage *texture_storage = RendererRD::TextureStorage::get_singleton();
+	RID color = texture_storage->render_target_get_rd_texture(p_render_target);
+	if (color.is_null()) {
+		return RID();
+	}
+	DepthTarget &dt = depth_targets[p_render_target];
+	if (dt.color == color && dt.framebuffer.is_valid() && RD::get_singleton()->framebuffer_is_valid(dt.framebuffer)) {
+		return dt.framebuffer;
+	}
+	// The target was resized or re-created: its colour texture is new, and freeing it freed our framebuffer.
+	if (dt.depth.is_valid()) {
+		RD::get_singleton()->free_rid(dt.depth);
+	}
+	RD::TextureFormat color_format = RD::get_singleton()->texture_get_format(color);
+	RD::TextureFormat tf;
+	tf.format = RD::DATA_FORMAT_D32_SFLOAT;
+	tf.width = color_format.width;
+	tf.height = color_format.height;
+	tf.usage_bits = RD::TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+	dt.color = color;
+	dt.depth = RD::get_singleton()->texture_create(tf, RD::TextureView());
+	RD::get_singleton()->set_resource_name(dt.depth, "Canvas depth");
+	Vector<RID> attachments = { color, dt.depth };
+	dt.framebuffer = RD::get_singleton()->framebuffer_create(attachments);
+	return dt.framebuffer;
 }
 
 void RendererCanvasRenderRD::_record_item_commands(const Item *p_item, RenderTarget p_render_target, const Transform2D &p_base_transform, Item *&r_current_clip, Light *p_lights, bool &r_batch_broken, bool &r_sdf_used, Batch *&r_current_batch) {
@@ -2803,6 +2892,11 @@ void RendererCanvasRenderRD::_record_item_commands(const Item *p_item, RenderTar
 					if (mesh_storage->multimesh_is_compact_2d(mm->multimesh)) {
 						r_current_batch->flags |= BATCH_FLAGS_INSTANCING_COMPACT_2D;
 					}
+					if (mesh_storage->multimesh_is_depth_prepass_2d(mm->multimesh) && depth_next_index + r_current_batch->mesh_instance_count < (1u << 24)) {
+						r_current_batch->depth_prepass = true;
+						r_current_batch->depth_base = depth_next_index;
+						depth_next_index += r_current_batch->mesh_instance_count;
+					}
 				} else if (c->type == Item::Command::TYPE_PARTICLES) {
 					RendererRD::TextureStorage *texture_storage = RendererRD::TextureStorage::get_singleton();
 					RendererRD::ParticlesStorage *particles_storage = RendererRD::ParticlesStorage::get_singleton();
@@ -3008,7 +3102,7 @@ void RendererCanvasRenderRD::_canvas_texture_invalidation_callback(bool p_delete
 	}
 }
 
-void RendererCanvasRenderRD::_render_batch(RD::DrawListID p_draw_list, CanvasShaderData *p_shader_data, RenderingDevice::FramebufferFormatID p_framebuffer_format, Light *p_lights, const Batch *p_batch, RenderingServerTypes::RenderInfo *r_render_info) {
+void RendererCanvasRenderRD::_render_batch(RD::DrawListID p_draw_list, CanvasShaderData *p_shader_data, RenderingDevice::FramebufferFormatID p_framebuffer_format, Light *p_lights, const Batch *p_batch, RenderingServerTypes::RenderInfo *r_render_info, DepthMode p_depth_mode) {
 	{
 		RendererRD::TextureStorage *ts = RendererRD::TextureStorage::get_singleton();
 
@@ -3144,6 +3238,12 @@ void RendererCanvasRenderRD::_render_batch(RD::DrawListID p_draw_list, CanvasSha
 			ERR_FAIL_NULL(p_batch->command);
 
 			PushConstantAttributes push_constant = p_batch->push_constant_attributes();
+			if (p_depth_mode != DEPTH_MODE_NONE) {
+				pipeline_key.depth_mode = p_depth_mode;
+				push_constant.base.batch_flags |= BATCH_FLAGS_DEPTH | (p_depth_mode == DEPTH_MODE_PREPASS ? BATCH_FLAGS_DEPTH_PREPASS : 0);
+				push_constant.base.depth_base = p_batch->depth_base;
+				push_constant.base.depth_count = p_batch->mesh_instance_count;
+			}
 
 			RendererRD::MeshStorage *mesh_storage = RendererRD::MeshStorage::get_singleton();
 			RendererRD::ParticlesStorage *particles_storage = RendererRD::ParticlesStorage::get_singleton();
@@ -3285,6 +3385,7 @@ RendererCanvasRenderRD::Batch *RendererCanvasRenderRD::_new_batch(bool &r_batch_
 	Batch new_batch = state.canvas_instance_batches[state.current_batch_index];
 	new_batch.instance_count = 0;
 	new_batch.start = state.instance_data_index;
+	new_batch.depth_prepass = false;
 	memset(&new_batch.push_data, 0, sizeof(new_batch.push_data));
 	state.current_batch_index++;
 	state.canvas_instance_batches.push_back(new_batch);

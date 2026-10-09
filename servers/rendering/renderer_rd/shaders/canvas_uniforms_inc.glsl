@@ -48,15 +48,22 @@ struct InstanceData {
 #define BATCH_FLAGS_DEFAULT_NORMAL_MAP_USED (1 << 9)
 #define BATCH_FLAGS_DEFAULT_SPECULAR_MAP_USED (1 << 10)
 #define BATCH_FLAGS_INSTANCING_COMPACT_2D (1 << 11)
+#define BATCH_FLAGS_DEPTH (1 << 12)
+#define BATCH_FLAGS_DEPTH_PREPASS (1 << 13)
 
 layout(push_constant, std430) uniform Params {
 	uint sc_packed_0;
 	uint specular_shininess;
 	uint batch_flags;
-	uint pad0;
+	uint depth_base;
 
 	vec2 msdf;
 	vec2 color_texture_pixel_size;
+
+	uint depth_count;
+	uint pad1;
+	uint pad2;
+	uint pad3;
 #ifdef USE_ATTRIBUTES
 	// Particles and meshes
 	vec2 world_x;

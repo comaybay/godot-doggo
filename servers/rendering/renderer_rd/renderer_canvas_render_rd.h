@@ -84,6 +84,16 @@ class RendererCanvasRenderRD : public RendererCanvasRender {
 		BATCH_FLAGS_DEFAULT_NORMAL_MAP_USED = (1 << 9),
 		BATCH_FLAGS_DEFAULT_SPECULAR_MAP_USED = (1 << 10),
 		BATCH_FLAGS_INSTANCING_COMPACT_2D = (1 << 11), // [doggo] see canvas.glsl
+		BATCH_FLAGS_DEPTH = (1 << 12), // [doggo] the instances write gl_Position.z = painter's index (canvas depth)
+		BATCH_FLAGS_DEPTH_PREPASS = (1 << 13), // [doggo] instances walk back to front and discard alpha != 1
+	};
+
+	// [doggo] Canvas depth, per draw. Depth is the painter's index of a flagged multimesh instance within one
+	// _render_batch_items pass (1-based, scaled by 2^-24 so every index is exact in D32F), and LARGER is nearer.
+	enum DepthMode {
+		DEPTH_MODE_NONE, // untouched by depth: the default for every pipeline
+		DEPTH_MODE_TEST, // drawn in painter's order, rejected where a LATER opaque pixel already won (>=, no write)
+		DEPTH_MODE_PREPASS, // depth only, front to back, alpha == 1 pixels only (>, write, no colour)
 	};
 
 	enum {
@@ -134,6 +144,7 @@ class RendererCanvasRenderRD : public RendererCanvasRender {
 		ShaderSpecialization shader_specialization = {};
 		uint32_t lcd_blend = 0;
 		uint32_t ubershader = 0;
+		uint32_t depth_mode = DEPTH_MODE_NONE; // [doggo]
 
 		uint32_t hash() const {
 			uint32_t h = hash_murmur3_one_32(variant);
@@ -143,6 +154,7 @@ class RendererCanvasRenderRD : public RendererCanvasRender {
 			h = hash_murmur3_one_32(shader_specialization.packed_0, h);
 			h = hash_murmur3_one_32(lcd_blend, h);
 			h = hash_murmur3_one_32(ubershader, h);
+			h = hash_murmur3_one_32(depth_mode, h);
 			return hash_fmix32(h);
 		}
 	};
@@ -384,10 +396,13 @@ class RendererCanvasRenderRD : public RendererCanvasRender {
 		ShaderSpecialization shader_specialization;
 		uint32_t specular_shininess;
 		uint32_t batch_flags;
-		uint32_t pad0;
+		uint32_t depth_base; // [doggo] painter's index of instance 0 (BATCH_FLAGS_DEPTH)
 
 		float msdf[2];
 		float color_texture_pixel_size[2];
+
+		uint32_t depth_count; // [doggo] instances drawn, to walk them back to front (BATCH_FLAGS_DEPTH_PREPASS)
+		uint32_t pad1[3];
 	};
 
 	struct PushConstantAttributes {
@@ -543,6 +558,8 @@ class RendererCanvasRenderRD : public RendererCanvasRender {
 		bool use_msdf = false;
 		bool use_lcd = false;
 		bool has_blend = false;
+		bool depth_prepass = false; // [doggo] a flagged multimesh; its instances own [depth_base, depth_base + count)
+		uint32_t depth_base = 0;
 
 		// batch-specific data
 		union {
@@ -557,7 +574,9 @@ class RendererCanvasRenderRD : public RendererCanvasRender {
 			PushConstant pc;
 			pc.specular_shininess = tex_info->specular_shininess;
 			pc.batch_flags = tex_info->flags | flags;
-			pc.pad0 = 0;
+			pc.depth_base = 0;
+			pc.depth_count = 0;
+			pc.pad1[0] = pc.pad1[1] = pc.pad1[2] = 0;
 
 			pc.msdf[0] = msdf_pix_range;
 			pc.msdf[1] = msdf_outline;
@@ -676,7 +695,17 @@ class RendererCanvasRenderRD : public RendererCanvasRender {
 	inline RID _get_pipeline_specialization_or_ubershader(CanvasShaderData *p_shader_data, PipelineKey &r_pipeline_key, PushConstant &r_push_constant, RID p_mesh_instance = RID(), void *p_surface = nullptr, uint32_t p_surface_index = 0, RID *r_vertex_array = nullptr);
 	void _render_batch_items(RenderTarget p_to_render_target, int p_item_count, const Transform2D &p_canvas_transform_inverse, Light *p_lights, bool &r_sdf_used, bool p_to_backbuffer = false, RenderingServerTypes::RenderInfo *r_render_info = nullptr);
 	void _record_item_commands(const Item *p_item, RenderTarget p_render_target, const Transform2D &p_base_transform, Item *&r_current_clip, Light *p_lights, bool &r_batch_broken, bool &r_sdf_used, Batch *&r_current_batch);
-	void _render_batch(RD::DrawListID p_draw_list, CanvasShaderData *p_shader_data, RenderingDevice::FramebufferFormatID p_framebuffer_format, Light *p_lights, const Batch *p_batch, RenderingServerTypes::RenderInfo *r_render_info = nullptr);
+	void _render_batch(RD::DrawListID p_draw_list, CanvasShaderData *p_shader_data, RenderingDevice::FramebufferFormatID p_framebuffer_format, Light *p_lights, const Batch *p_batch, RenderingServerTypes::RenderInfo *r_render_info = nullptr, DepthMode p_depth_mode = DEPTH_MODE_NONE);
+
+	// [doggo] Canvas depth: one D32F buffer per render target, and a framebuffer pairing it with the target's colour.
+	struct DepthTarget {
+		RID color;
+		RID depth;
+		RID framebuffer;
+	};
+	HashMap<RID, DepthTarget> depth_targets;
+	uint32_t depth_next_index = 1; // painter's index of the next flagged instance in the pass being recorded
+	RID _get_depth_framebuffer(RID p_render_target);
 	void _prepare_batch_texture_info(RID p_texture, TextureState &p_state, TextureInfo *p_info);
 
 	// non-UMA

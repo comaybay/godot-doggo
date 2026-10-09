@@ -205,6 +205,13 @@ void main() {
 
 #ifdef USE_ATTRIBUTES
 
+	// [doggo] The depth pre-pass walks a multimesh back to front, so the nearest instance writes first and
+	// everything it hides fails the depth test before its fragment shader runs.
+	uint instance_index = uint(gl_InstanceIndex);
+	if (bool(params.batch_flags & BATCH_FLAGS_DEPTH_PREPASS)) {
+		instance_index = params.depth_count - 1u - instance_index;
+	}
+
 	uint instancing = params.batch_flags & BATCH_FLAGS_INSTANCING_MASK;
 
 	if (instancing > 1) {
@@ -246,7 +253,7 @@ void main() {
 	} else if (instancing == 1 && bool(params.batch_flags & BATCH_FLAGS_INSTANCING_COMPACT_2D)) {
 		// [doggo] Compact 2D instance, one vec4: x, y, snorm16x2 (cos, sin), half2 (uniform scale, alpha).
 		// Builds the same model matrix the 8-float path does for a rotation * uniform scale + origin.
-		vec4 d = transforms.data[gl_InstanceIndex];
+		vec4 d = transforms.data[instance_index];
 		vec2 cs = unpackSnorm2x16(floatBitsToUint(d.z));
 		vec2 sa = unpackHalf2x16(floatBitsToUint(d.w));
 		mat4 matrix = mat4(vec4(cs.x * sa.x, cs.y * sa.x, 0.0, 0.0), vec4(-cs.y * sa.x, cs.x * sa.x, 0.0, 0.0), vec4(0.0, 0.0, 1.0, 0.0), vec4(d.x, d.y, 0.0, 1.0));
@@ -255,7 +262,7 @@ void main() {
 	} else if (instancing == 1) {
 		uint stride = 2 + bitfieldExtract(params.batch_flags, BATCH_FLAGS_INSTANCING_HAS_COLORS_SHIFT, 1) + bitfieldExtract(params.batch_flags, BATCH_FLAGS_INSTANCING_HAS_CUSTOM_DATA_SHIFT, 1);
 
-		uint offset = stride * gl_InstanceIndex;
+		uint offset = stride * instance_index;
 
 		mat4 matrix = mat4(transforms.data[offset + 0], transforms.data[offset + 1], vec4(0.0, 0.0, 1.0, 0.0), vec4(0.0, 0.0, 0.0, 1.0));
 		offset += 2;
@@ -305,6 +312,13 @@ void main() {
 	uv_vertex_interp = vec4(uv, vertex);
 
 	gl_Position = canvas_data.screen_transform * vec4(vertex, 0.0, 1.0);
+
+#ifdef USE_ATTRIBUTES
+	if (bool(params.batch_flags & BATCH_FLAGS_DEPTH)) {
+		// [doggo] Painter's index * 2^-24: exact in D32F, and constant over the quad, so both passes agree bit for bit.
+		gl_Position.z = float(params.depth_base + instance_index) * (1.0 / 16777216.0);
+	}
+#endif
 
 #ifdef USE_POINT_SIZE
 	gl_PointSize = point_size;
@@ -863,6 +877,14 @@ void main() {
 
 #ifdef MODE_LIGHT_ONLY
 	color.a *= light_only_alpha;
+#endif
+
+#ifdef USE_ATTRIBUTES
+	// [doggo] Only a pixel that REPLACES what is under it may hide it: alpha exactly 1, on the very value the
+	// blend reads (the pre-pass runs this same shader, so it is the same value).
+	if (bool(params.batch_flags & BATCH_FLAGS_DEPTH_PREPASS) && color.a != 1.0) {
+		discard;
+	}
 #endif
 
 	frag_color = color;
