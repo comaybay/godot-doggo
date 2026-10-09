@@ -2305,12 +2305,12 @@ void RendererCanvasRenderRD::_render_batch_items(RenderTarget p_to_render_target
 		fb_uniform_set = _create_base_uniform_set(p_to_render_target.render_target, p_to_backbuffer);
 	}
 
-	// [doggo] Canvas depth: only for a pass that draws a flagged multimesh, straight into the target.
+	// [doggo] Canvas depth: only for a pass that draws a 2D multimesh, straight into the target.
 	// A backbuffer pass (canvas group) or a multisampled target keeps the plain path.
 	bool use_depth = false;
 	if (!p_to_backbuffer && texture_storage->render_target_get_msaa(p_to_render_target.render_target) == RSE::VIEWPORT_MSAA_DISABLED) {
 		for (uint32_t i = 0; i <= state.current_batch_index; i++) {
-			if (state.canvas_instance_batches[i].depth_prepass && state.canvas_instance_batches[i].instance_count != 0) {
+			if (state.canvas_instance_batches[i].uses_depth && state.canvas_instance_batches[i].instance_count != 0) {
 				use_depth = true;
 				break;
 			}
@@ -2366,7 +2366,7 @@ void RendererCanvasRenderRD::_render_batch_items(RenderTarget p_to_render_target
 		}
 
 		if (p_depth_mode == DEPTH_MODE_PREPASS) {
-			// Only a blend that replaces the destination at alpha 1 can occlude. Every other flagged batch is
+			// Only a blend that replaces the destination at alpha 1 can occlude. Every other multimesh batch is
 			// still depth-TESTED below: what an opaque later pixel covers is invisible under any blend.
 			const int blend = shader_data->blend_mode;
 			if (blend != RendererRD::MaterialStorage::ShaderData::BLEND_MODE_MIX && blend != RendererRD::MaterialStorage::ShaderData::BLEND_MODE_PREMULTIPLIED_ALPHA && blend != RendererRD::MaterialStorage::ShaderData::BLEND_MODE_DISABLED) {
@@ -2378,10 +2378,10 @@ void RendererCanvasRenderRD::_render_batch_items(RenderTarget p_to_render_target
 	};
 
 	if (use_depth) {
-		// [doggo] Front to back: the last flagged batch first (and, in the shader, its last instance first).
+		// [doggo] Front to back: the last multimesh batch first (and, in the shader, its last instance first).
 		for (int64_t i = state.current_batch_index; i >= 0; i--) {
 			Batch *current_batch = &state.canvas_instance_batches[i];
-			if (current_batch->instance_count != 0 && current_batch->depth_prepass) {
+			if (current_batch->instance_count != 0 && current_batch->uses_depth) {
 				draw_batch(current_batch, DEPTH_MODE_PREPASS, nullptr);
 			}
 		}
@@ -2393,7 +2393,7 @@ void RendererCanvasRenderRD::_render_batch_items(RenderTarget p_to_render_target
 		if (current_batch->instance_count == 0) {
 			continue;
 		}
-		draw_batch(current_batch, use_depth && current_batch->depth_prepass ? DEPTH_MODE_TEST : DEPTH_MODE_NONE, r_render_info);
+		draw_batch(current_batch, use_depth && current_batch->uses_depth ? DEPTH_MODE_TEST : DEPTH_MODE_NONE, r_render_info);
 	}
 
 	RD::get_singleton()->draw_list_end();
@@ -2892,8 +2892,8 @@ void RendererCanvasRenderRD::_record_item_commands(const Item *p_item, RenderTar
 					if (mesh_storage->multimesh_is_compact_2d(mm->multimesh)) {
 						r_current_batch->flags |= BATCH_FLAGS_INSTANCING_COMPACT_2D;
 					}
-					if (mesh_storage->multimesh_is_depth_prepass_2d(mm->multimesh) && depth_next_index + r_current_batch->mesh_instance_count < (1u << 24)) {
-						r_current_batch->depth_prepass = true;
+					if (depth_next_index + r_current_batch->mesh_instance_count < DEPTH_INDEX_LIMIT) {
+						r_current_batch->uses_depth = true;
 						r_current_batch->depth_base = depth_next_index;
 						depth_next_index += r_current_batch->mesh_instance_count;
 					}
@@ -3385,7 +3385,7 @@ RendererCanvasRenderRD::Batch *RendererCanvasRenderRD::_new_batch(bool &r_batch_
 	Batch new_batch = state.canvas_instance_batches[state.current_batch_index];
 	new_batch.instance_count = 0;
 	new_batch.start = state.instance_data_index;
-	new_batch.depth_prepass = false;
+	new_batch.uses_depth = false;
 	memset(&new_batch.push_data, 0, sizeof(new_batch.push_data));
 	state.current_batch_index++;
 	state.canvas_instance_batches.push_back(new_batch);

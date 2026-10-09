@@ -2501,8 +2501,6 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("multimesh_get_buffer_rd_rid", "multimesh"), &RenderingServer::multimesh_get_buffer_rd_rid);
 	ClassDB::bind_method(D_METHOD("multimesh_set_compact_2d", "multimesh", "enable"), &RenderingServer::multimesh_set_compact_2d);
 	ClassDB::bind_method(D_METHOD("multimesh_is_compact_2d", "multimesh"), &RenderingServer::multimesh_is_compact_2d);
-	ClassDB::bind_method(D_METHOD("multimesh_set_depth_prepass_2d", "multimesh", "enable"), &RenderingServer::multimesh_set_depth_prepass_2d);
-	ClassDB::bind_method(D_METHOD("multimesh_is_depth_prepass_2d", "multimesh"), &RenderingServer::multimesh_is_depth_prepass_2d);
 	ClassDB::bind_method(D_METHOD("multimesh_get_buffer", "multimesh"), &RenderingServer::multimesh_get_buffer);
 
 	ClassDB::bind_method(D_METHOD("multimesh_set_buffer_interpolated", "multimesh", "buffer", "buffer_previous"), &RenderingServer::multimesh_set_buffer_interpolated);

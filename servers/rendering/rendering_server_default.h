@@ -459,8 +459,6 @@ public:
 	FUNC1RC(RID, multimesh_get_buffer_rd_rid, RID)
 	FUNC2(multimesh_set_compact_2d, RID, bool)
 	FUNC1RC(bool, multimesh_is_compact_2d, RID)
-	FUNC2(multimesh_set_depth_prepass_2d, RID, bool)
-	FUNC1RC(bool, multimesh_is_depth_prepass_2d, RID)
 	FUNC1RC(Vector<float>, multimesh_get_buffer, RID)
 
 	FUNC3(multimesh_set_buffer_interpolated, RID, const Vector<float> &, const Vector<float> &)

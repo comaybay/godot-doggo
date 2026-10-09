@@ -289,10 +289,6 @@ public:
 	// [doggo] Compact 2D instances: 4 floats each (x, y, snorm16x2 cos/sin, half2 scale/alpha). Set before allocating.
 	virtual void multimesh_set_compact_2d(RID p_multimesh, bool p_enable) = 0;
 	virtual bool multimesh_is_compact_2d(RID p_multimesh) const = 0;
-	// [doggo] Canvas depth pre-pass: the multimesh's alpha == 1 pixels hide what was drawn before them in the same
-	// canvas pass. Painter's order is unchanged; only fragments nobody can see are skipped. RD only.
-	virtual void multimesh_set_depth_prepass_2d(RID p_multimesh, bool p_enable) = 0;
-	virtual bool multimesh_is_depth_prepass_2d(RID p_multimesh) const = 0;
 	virtual Vector<float> multimesh_get_buffer(RID p_multimesh) const = 0;
 
 	// Interpolation.

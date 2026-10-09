@@ -88,8 +88,10 @@ class RendererCanvasRenderRD : public RendererCanvasRender {
 		BATCH_FLAGS_DEPTH_PREPASS = (1 << 13), // [doggo] instances walk back to front and discard alpha != 1
 	};
 
-	// [doggo] Canvas depth, per draw. Depth is the painter's index of a flagged multimesh instance within one
-	// _render_batch_items pass (1-based, scaled by 2^-24 so every index is exact in D32F), and LARGER is nearer.
+	// [doggo] Canvas depth, per draw. Every 2D multimesh instance gets its painter's index k within one
+	// _render_batch_items pass (1-based; LARGER is nearer). The pre-pass writes k * 2^-23 and the main pass tests at
+	// (k + 0.5) * 2^-23: both exact in D32F below DEPTH_INDEX_LIMIT, and a half step apart, so an occluder passes its
+	// own test, and what it hides fails, even if a rasterizer rounds z by less than half a step either way.
 	enum DepthMode {
 		DEPTH_MODE_NONE, // untouched by depth: the default for every pipeline
 		DEPTH_MODE_TEST, // drawn in painter's order, rejected where a LATER opaque pixel already won (>=, no write)
@@ -558,7 +560,7 @@ class RendererCanvasRenderRD : public RendererCanvasRender {
 		bool use_msdf = false;
 		bool use_lcd = false;
 		bool has_blend = false;
-		bool depth_prepass = false; // [doggo] a flagged multimesh; its instances own [depth_base, depth_base + count)
+		bool uses_depth = false; // [doggo] a 2D multimesh: its instances own [depth_base, depth_base + count)
 		uint32_t depth_base = 0;
 
 		// batch-specific data
@@ -704,7 +706,9 @@ class RendererCanvasRenderRD : public RendererCanvasRender {
 		RID framebuffer;
 	};
 	HashMap<RID, DepthTarget> depth_targets;
-	uint32_t depth_next_index = 1; // painter's index of the next flagged instance in the pass being recorded
+	uint32_t depth_next_index = 1; // painter's index of the next multimesh instance in the pass being recorded
+	// Past it a multimesh draws without depth (correct, just not culled): (k + 0.5) * 2^-23 must stay exact in D32F.
+	static constexpr uint32_t DEPTH_INDEX_LIMIT = 1u << 22;
 	RID _get_depth_framebuffer(RID p_render_target);
 	void _prepare_batch_texture_info(RID p_texture, TextureState &p_state, TextureInfo *p_info);
 

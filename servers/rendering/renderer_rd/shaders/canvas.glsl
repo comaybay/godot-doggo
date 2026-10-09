@@ -315,8 +315,12 @@ void main() {
 
 #ifdef USE_ATTRIBUTES
 	if (bool(params.batch_flags & BATCH_FLAGS_DEPTH)) {
-		// [doggo] Painter's index * 2^-24: exact in D32F, and constant over the quad, so both passes agree bit for bit.
-		gl_Position.z = float(params.depth_base + instance_index) * (1.0 / 16777216.0);
+		// [doggo] Painter's index k * 2^-23 in the pre-pass, (k + 0.5) * 2^-23 in the main pass: see DepthMode.
+		float depth_index = float(params.depth_base + instance_index);
+		if (!bool(params.batch_flags & BATCH_FLAGS_DEPTH_PREPASS)) {
+			depth_index += 0.5;
+		}
+		gl_Position.z = depth_index * (1.0 / 8388608.0);
 	}
 #endif
 
